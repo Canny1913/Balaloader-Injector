@@ -1,0 +1,86 @@
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '*.md'
+  workflow_dispatch:
+  
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+  
+jobs:
+  build:
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # ignore error
+        target: [ {android: arm64-v8a, rust: aarch64-linux-android}, {android: armeabi-v7a, rust: armv7-linux-androideabi}, {android: x86_64, rust: x86_64-linux-android} ]
+    steps:
+
+      - name: Checkout Builds
+        uses: actions/checkout@v5
+        with:
+          ref: builds
+          path: builds
+          
+      - name: Checkout LÖVE
+        uses: actions/checkout@v5
+        with:
+          repository: Canny1913/love-android
+          ref: 11.x
+          path: love
+          submodules: recursive
+          
+      - name: Checkout Injector
+        uses: actions/checkout@v5
+        with:
+          repository: Canny1913/lovely-injector
+          path: lovely
+          submodules: recursive
+
+      - name: Setup toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          target: ${{ matrix.target.rust }}
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk
+        
+      - name: Setup JDK 21
+        uses: actions/setup-java@v5
+        with:
+          java-version: 21
+          distribution: temurin
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          validate-wrappers: false
+
+      - name: Build LÖVE libs
+        run: |
+          cd "$GITHUB_WORKSPACE/love"
+          chmod +x gradlew
+          ./gradlew love:makeLibs -Pabi.filter='${{ matrix.target.android }}'
+          cp love/build/libs/love.zip "$GITHUB_WORKSPACE/builds/${{ matrix.target.android }}"
+      - name: Build Injector
+        run: |
+          cd "$GITHUB_WORKSPACE/lovely"
+          cargo ndk -t ${{ matrix.target.android }} build --target ${{ matrix.target.rust }} --package lovely-android --release
+          cp "./target/${{ matrix.target.rust }}/release/liblovely.so" "$GITHUB_WORKSPACE/builds/${{ matrix.target.android }}"
+          
+      - name: Push Libs
+        run: |
+          cd "$GITHUB_WORKSPACE/builds"
+          git config --local user.email "actions@github.com"
+          git config --local user.name "GitHub Actions"
+          git add .
+          git pull
+          git commit -m "Build $GITHUB_SHA" || exit 0
+          git push
